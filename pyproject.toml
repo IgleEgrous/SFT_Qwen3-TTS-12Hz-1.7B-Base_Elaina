@@ -1,0 +1,7 @@
+[project]
+name = "sft-qwen3-tts-12hz-1-7b-base"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
