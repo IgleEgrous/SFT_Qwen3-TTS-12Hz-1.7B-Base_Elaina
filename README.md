@@ -22,8 +22,20 @@ SFT_Qwen3-TTS-12Hz-1.7B-Base/
 │   ├── dataset.py                    # 官方数据集加载逻辑
 │   ├── prepare_data.py               # 数据 tokenize 脚本（支持 HF / Local 两种模式）
 │   ├── load_elaina.py                # 伊蕾娜数据集预览/下载工具
-│   └── sft_12hz_lora.py              # LoRA SFT 训练脚本（基于官方 sft_12hz.py）
+│   ├── sft_12hz_lora.py             # LoRA SFT 训练脚本
+│   ├── eval_checkpoints.py           # 多 checkpoint 横向对比脚本
+│   └── merge_all_checkpoints.py      # 批量合并 LoRA 到 Base 模型脚本
 └── README.md
+```
+
+## 完整工作流程
+
+```
+Step 1: Tokenize 数据
+Step 2: LoRA SFT 训练
+Step 3: 横向对比各 epoch 效果（选最优 checkpoint）
+Step 4: 批量合并所有 LoRA checkpoint → 完整 HF 模型
+Step 5: 上传至 HuggingFace
 ```
 
 ## 数据集
@@ -62,9 +74,9 @@ soundfile
 scipy >= 1.10.0
 ```
 
-## 完整训练流程
+---
 
-### Step 1: Tokenize 数据
+## Step 1: Tokenize 数据
 
 将音频转换为离散的 audio codes，生成 `train_with_codes.jsonl`。
 
@@ -104,7 +116,7 @@ python script/prepare_data.py --mode local \
 
 ---
 
-### Step 2: LoRA SFT 训练
+## Step 2: LoRA SFT 训练
 
 ```bash
 python script/sft_12hz_lora.py \
@@ -149,6 +161,103 @@ python script/sft_12hz_lora.py \
   --save_epochs 2 4 8 16 32
 ```
 
+**checkpoint 输出结构**：
+
+```
+output/
+└── checkpoint-epoch-{N}/
+    ├── adapter_model.safetensors    # LoRA 权重（仅此文件，约几 MB）
+    └── ...（其余文件复制自 Base 模型）
+```
+
+---
+
+## Step 3: 横向对比各 epoch 效果
+
+训练完后用同一段 ref_audio + 同一批测试文本，对比不同 epoch 的生成效果。
+
+```bash
+python script/eval_checkpoints.py \
+  --checkpoints \
+    ../output/checkpoint-epoch-2 \
+    ../output/checkpoint-epoch-4 \
+    ../output/checkpoint-epoch-8 \
+    ../output/checkpoint-epoch-16 \
+    ../output/checkpoint-epoch-32 \
+  --ref_audio path/to/ref.wav \
+  --test_texts \
+    "学校行くのは嫌だけど、私みたいな人間は一日行かなかっただけでクラスの皆から存在を忘れられてしまうんだよ" \
+    "こんばんは、こっちはボッチです" \
+    "本当に、お前助かったな" \
+  --output_dir ../output/eval_samples \
+  --speaker elaina
+```
+
+**输出结构**：
+
+```
+output/eval_samples/
+├── checkpoint-epoch-2/
+│   ├── 学校行くのは嫌だと....wav
+│   └── ...
+├── checkpoint-epoch-4/
+└── ...
+```
+
+**验证方法**：用音频播放器横向对比同一文本在不同 epoch 下的效果，选音色最稳、语气最自然的 epoch。
+
+---
+
+## Step 4: 批量合并 LoRA → 完整 HF 模型
+
+将所有保存的 LoRA checkpoint 分别合并到 Base 模型，输出为独立的完整 HF 模型（可直接上传）。
+
+```bash
+python script/merge_all_checkpoints.py \
+  --base_model ../models/Qwen3-TTS-12Hz-1.7B-Base \
+  --checkpoints_dir ../output \
+  --output_parent ../output/merged_models \
+  --speaker_name elaina
+```
+
+**输出结构**：
+
+```
+output/merged_models/
+├── checkpoint-epoch-2-merged/     # 完整 HF 模型
+├── checkpoint-epoch-4-merged/
+├── checkpoint-epoch-8-merged/
+├── checkpoint-epoch-16-merged/
+└── checkpoint-epoch-32-merged/
+```
+
+每个目录都是完整的 HF 模型，`from_pretrained` 直接加载。
+
+---
+
+## Step 5: 上传至 HuggingFace
+
+```bash
+# 安装 huggingface_hub（如未安装）
+pip install huggingface_hub
+
+# 登录（需要 HF_TOKEN）
+huggingface-cli login
+
+# 上传单个模型
+huggingface-cli upload \
+  yeeko/Qwen3-TTS-12Hz-1.7B-Base-elaina-e8 \
+  ../output/merged_models/checkpoint-epoch-8-merged
+
+# 或上传整个 merged_models 目录
+huggingface-cli upload \
+  yeeko/Qwen3-TTS-12Hz-1.7B-Base-elaina \
+  ../output/merged_models \
+  --include "checkpoint-epoch-*-merged/*"
+```
+
+---
+
 ## 硬件需求
 
 | 模型大小 | 最低显存 | 推荐显存 |
@@ -158,6 +267,8 @@ python script/sft_12hz_lora.py \
 | 1.7B（全量微调） | 16GB | 24GB |
 
 LoRA 模式下训练参数量约为全模型的 0.1%~1%，大幅降低显存需求。
+
+---
 
 ## 技术细节
 
@@ -197,15 +308,16 @@ Qwen3TTSTokenizer.encode() → audio_codes (离散语音token，12Hz)
 只对 speech_tokens 部分计算 loss（prompt masking）
 ```
 
-### checkpoint 输出
+### LoRA 权重 vs 完整模型
 
-```
-output/
-└── checkpoint-epoch-{N}/
-    ├── config.json            # 已更新 tts_model_type=custom_voice
-    ├── model.safetensors      # LoRA权重 + 融合speaker embedding
-    └── ...（其余文件同Base模型）
-```
+| | LoRA checkpoint | 合并后模型 |
+|---|---|---|
+| 文件大小 | ~几 MB | ~3.8GB |
+| 内容 | 仅 A、B 矩阵 | 完整权重 |
+| 加载方式 | 需要配合 Base 模型 | `from_pretrained` 直接加载 |
+| 用途 | 中间保存，可选多个 epoch | 最终上传/发布 |
+
+---
 
 ## 相关资料
 
