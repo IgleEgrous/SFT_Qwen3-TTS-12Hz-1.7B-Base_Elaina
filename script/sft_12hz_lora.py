@@ -43,6 +43,8 @@ def train():
     parser.add_argument("--lr", type=float, default=2e-6)   # LoRA 建议用小 lr
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--speaker_name", type=str, default="speaker_test")
+    parser.add_argument("--save_epochs", type=int, nargs="+", default=None,
+                        help="指定保存 checkpoint 的 epoch 列表，如 --save_epochs 2 4 8 16 32。默认 None 表示每个 epoch 都保存")
 
     # === LoRA 新增参数 ===
     parser.add_argument("--lora_r", type=int, default=16,
@@ -135,6 +137,7 @@ def train():
     )
 
     num_epochs = args.num_epochs
+    save_epochs = set(args.save_epochs) if args.save_epochs else None  # None = 保存所有
     model.train()
 
     for epoch in range(num_epochs):
@@ -208,9 +211,10 @@ def train():
                 )
 
         # ============================================================
-        # Checkpoint 保存（兼容 PEFT 的 state_dict）
+        # Checkpoint 保存（仅指定 epoch）
         # ============================================================
-        if accelerator.is_main_process:
+        should_save = (save_epochs is None) or (epoch in save_epochs)
+        if should_save and accelerator.is_main_process:
             output_dir = os.path.join(args.output_model_path, f"checkpoint-epoch-{epoch}")
             shutil.copytree(MODEL_PATH, output_dir, dirs_exist_ok=True)
 
