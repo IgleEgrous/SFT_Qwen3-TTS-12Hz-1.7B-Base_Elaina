@@ -55,8 +55,7 @@ tokenize 后输出格式（`train_with_codes.jsonl`）：
 ```
 
 **关键要求**：
-- `ref_audio`：所有样本建议使用同一个参考音频（长度 3~10 秒，24kHz，干净无噪）
-- `text`：日语/中文/英文均可，对应音频内容即可
+- `ref_audio`：参考音频路径，所有样本使用同一个 ref_audio（长度 3~10 秒，24kHz，干净无噪）。用户可自由选择任意音频作为参考，常见做法是取数据集内某一条音频，或使用外部高质量音频。
 
 ## 环境依赖
 
@@ -87,12 +86,17 @@ python script/prepare_data.py --mode hf \
   --hf_split train \
   --audio_col audio \
   --text_col transcription \
-  --ref_audio_idx 0 \
+  --ref_audio "/path/to/你的参考音频.wav"  # 用户自由选择参考音频\
   --tokenizer_model_path ../models/Qwen3-TTS-Tokenizer-12Hz \
   --output_jsonl ../datasets/train_with_codes.jsonl \
   --batch_size 32 \
   --device cuda:0
 ```
+
+> **ref_audio 选择方式**：
+> - 直接指定 `--ref_audio /path/to/audio.wav`（推荐，可自由选择任意高质量音频）
+> - 或指定 `--ref_audio_idx N` 从数据集中取第 N 条（默认 0）
+> - 优先级：`--ref_audio` > `--ref_audio_idx`
 
 **方式 B：本地 parquet + `hf_hub_download`（Windows / 调试用）**
 
@@ -104,7 +108,7 @@ python script/prepare_data.py --mode local \
   --audio_col file_name \
   --text_col transcription \
   --audio_dir ../datasets/audio \
-  --ref_audio_idx 0 \
+  --ref_audio "/path/to/你的参考音频.wav"  # 用户自由选择参考音频\
   --tokenizer_model_path ../models/Qwen3-TTS-Tokenizer-12Hz \
   --output_jsonl ../datasets/train_with_codes.jsonl \
   --batch_size 32 \

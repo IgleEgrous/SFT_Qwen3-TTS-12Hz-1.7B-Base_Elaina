@@ -19,7 +19,7 @@ import shutil
 import torch
 from accelerate import Accelerator
 from dataset import TTSDataset
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, TaskType, get_peft_model, get_peft_state_dict
 from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 from safetensors.torch import save_file
 from torch.optim import AdamW
@@ -232,24 +232,27 @@ def train():
             with open(output_config_file, 'w', encoding='utf-8') as f:
                 json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
-            # 保存 LoRA 权重 + 融合 speaker embedding
+            # ============================================================
+            # 保存 LoRA adapter（标准 PEFT 格式）
+            # ============================================================
             unwrapped_model = accelerator.unwrap_model(model)
-            state_dict = {k: v.detach().to("cpu")
-                          for k, v in unwrapped_model.state_dict().items()}
 
-            # 删除 frozen speaker_encoder
-            drop_prefix = "speaker_encoder"
-            keys_to_drop = [k for k in state_dict.keys() if k.startswith(drop_prefix)]
+            # 用 PEFT 标准方式保存 adapter weights + config
+            # 不依赖 accelerator，避免 key 不匹配问题
+            peft_state_dict = get_peft_state_dict(unwrapped_model, "cuda:0" if torch.cuda.is_available() else "cpu")
+
+            # 删除 frozen speaker_encoder（如有）
+            keys_to_drop = [k for k in peft_state_dict.keys() if k.startswith("speaker_encoder.")]
             for k in keys_to_drop:
-                del state_dict[k]
+                del peft_state_dict[k]
 
-            # 写入 speaker embedding
-            weight = state_dict['talker.model.codec_embedding.weight']
-            state_dict['talker.model.codec_embedding.weight'][3000] = \
-                target_speaker_embedding[0].detach().to(weight.device).to(weight.dtype)
+            # 保存 adapter weights（LoRA A、B 矩阵，仅几 MB）
+            save_file(peft_state_dict, os.path.join(output_dir, "adapter_model.safetensors"))
 
-            save_path = os.path.join(output_dir, "model.safetensors")
-            save_file(state_dict, save_path)
+            # 保存 adapter config（PEFT 标准格式）
+            unwrapped_model.peft_config["default"].to_json_file(
+                os.path.join(output_dir, "adapter_config.json")
+            )
             print(f"✅ Checkpoint saved: {save_path}")
 
 

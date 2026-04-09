@@ -1,9 +1,14 @@
 # coding=utf-8
 """
-merge_all_checkpoints.py — 批量合并所有 LoRA checkpoint 到 Base 模型
+merge_all_checkpoints.py — 批量合并 LoRA checkpoint 到 Base 模型
 
-将 output/ 下的所有 checkpoint-epoch-* 目录中的 LoRA 权重合并到 Base 模型，
+将 output/ 下的所有 checkpoint-epoch-* 目录中的 LoRA adapter 合并到 Base 模型，
 输出为独立的完整 HF 模型，可直接上传。
+
+前提：checkpoint 目录包含以下文件（由 sft_12hz_lora.py 生成）：
+    adapter_model.safetensors   # LoRA 权重（A、B 矩阵）
+    adapter_config.json         # PEFT adapter 配置
+    model.safetensors           # Base 模型权重 + speaker embedding 在 slot 3000
 
 用法：
     python script/merge_all_checkpoints.py \
@@ -27,69 +32,78 @@ import shutil
 
 import torch
 from peft import PeftModel
-from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
 from safetensors.torch import load_file, save_file
-from transformers import AutoConfig
 
 
 def find_checkpoints(checkpoints_dir: str):
-    """找到所有 checkpoint-epoch-* 目录"""
+    """找到所有 checkpoint-epoch-* 目录（需包含 adapter_model.safetensors）"""
     checkpoints = []
     for name in os.listdir(checkpoints_dir):
         path = os.path.join(checkpoints_dir, name)
-        if os.path.isdir(path) and name.startswith("checkpoint-epoch-"):
-            checkpoints.append((int(name.replace("checkpoint-epoch-", "")), name, path))
+        adapter_file = os.path.join(path, "adapter_model.safetensors")
+        if os.path.isdir(path) and name.startswith("checkpoint-epoch-") and os.path.exists(adapter_file):
+            try:
+                epoch = int(name.replace("checkpoint-epoch-", ""))
+            except ValueError:
+                continue
+            checkpoints.append((epoch, name, path))
     checkpoints.sort(key=lambda x: x[0])
     return [(name, path) for _, name, path in checkpoints]
 
 
-def merge_and_save(base_model_path: str, lora_dir: str, output_dir: str,
-                   speaker_name: str):
+def merge_single_checkpoint(base_model_path: str, checkpoint_path: str, output_dir: str,
+                             speaker_name: str):
     """
-    合并单个 LoRA checkpoint 到 Base 模型并保存。
+    合并单个 checkpoint：
 
-    注意：这里采用"权重注入"方式而非 from_pretrained，因为：
-    - checkpoint 里只有 LoRA 的 adapter weights（adapter_model.safetensors）
-    - 需要先加载 base，再把 LoRA 权重注入
+    1. 从 base_model_path 加载完整 base 模型
+    2. 从 checkpoint 的 model.safetensors 取出 speaker embedding 注入到 slot 3000
+    3. 用 PeftModel 加载 adapter + merge
+    4. 保存完整合并模型
     """
-    print(f"\n{'='*50}")
-    print(f"合并: {lora_dir}")
+    print(f"\n{'=' * 50}")
+    print(f"合并: {checkpoint_path}")
     print(f"输出: {output_dir}")
 
-    # 1. 加载 base 模型（不做任何合并的干净加载）
+    # 1. 加载 base 模型（完整权重）
     print("  [1/4] 加载 Base 模型...")
+    from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
     base_model = Qwen3TTSModel.from_pretrained(
         base_model_path,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
 
-    # 2. 找到 adapter weights 文件
-    adapter_path = os.path.join(lora_dir, "adapter_model.safetensors")
-    if not os.path.exists(adapter_path):
-        print(f"  ⚠️  未找到 adapter_model.safetensors，跳过: {lora_dir}")
-        return
+    # 2. 注入 speaker embedding（从 checkpoint 的 model.safetensors 读取 slot 3000）
+    checkpoint_model_path = os.path.join(checkpoint_path, "model.safetensors")
+    if os.path.exists(checkpoint_model_path):
+        print("  [2/4] 注入 speaker embedding 到 slot 3000...")
+        ckpt_state = load_file(checkpoint_model_path, device="cpu")
+        spk_embedding = ckpt_state.get("talker.model.codec_embedding.weight")
+        if spk_embedding is not None:
+            with torch.no_grad():
+                base_model.model.talker.model.codec_embedding.weight[3000] = spk_embedding[3000].clone()
+            print(f"       speaker embedding 已注入（来自 model.safetensors slot 3000）")
+        else:
+            print("       ⚠️  未在 checkpoint 中找到 speaker embedding，跳过注入")
+    else:
+        print("       ⚠️  checkpoint 中无 model.safetensors，跳过 speaker 注入")
 
-    print(f"  [2/4] 加载 LoRA 权重: {adapter_path}")
-    adapter_state = load_file(adapter_path, device="cpu")
-
-    # 3. 注入 LoRA 权重到 base（用 PeftModel 方式）
-    print("  [3/4] 注入 LoRA 权重...")
-    base_model.model = PeftModel.from_pretrained(
+    # 3. 加载 LoRA adapter 并 merge
+    print("  [3/4] 加载 LoRA adapter 并合并...")
+    peft_model = PeftModel.from_pretrained(
         base_model.model,
-        lora_dir,
+        checkpoint_path,
         is_trainable=False,
     )
-
-    # Merge LoRA into base
-    merged_model = base_model.model.merge_and_unload()
+    merged_model = peft_model.merge_and_unload()
     base_model.model = merged_model
 
     # 4. 保存完整合并模型
-    print("  [4/4] 保存合并模型...")
+    print("  [4/4] 保存完整合并模型...")
     os.makedirs(output_dir, exist_ok=True)
 
-    # 复制所有 base 模型文件
+    # 复制 Base 模型的所有文件
     for f in os.listdir(base_model_path):
         src = os.path.join(base_model_path, f)
         dst = os.path.join(output_dir, f)
@@ -100,15 +114,14 @@ def merge_and_save(base_model_path: str, lora_dir: str, output_dir: str,
         else:
             shutil.copy2(src, dst)
 
-    # 保存合并后的权重
+    # 保存合并后的权重（覆盖 model.safetensors）
     state_dict = {k: v.cpu() for k, v in base_model.state_dict().items()}
 
-    # 删除 speaker_encoder（训练时被 frozen，不参与推理）
-    keys_to_drop = [k for k in state_dict.keys() if k.startswith("speaker_encoder")]
+    # 删除 speaker_encoder（frozen，不参与推理）
+    keys_to_drop = [k for k in state_dict.keys() if k.startswith("speaker_encoder.")]
     for k in keys_to_drop:
         del state_dict[k]
 
-    # 保存 safetensors
     save_file(state_dict, os.path.join(output_dir, "model.safetensors"))
 
     # 更新 config.json
@@ -116,7 +129,7 @@ def merge_and_save(base_model_path: str, lora_dir: str, output_dir: str,
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
     config["tts_model_type"] = "custom_voice"
-    config["_name_or_path"] = output_dir  # 记录来源
+    config["_name_or_path"] = output_dir
     talker_config = config.get("talker_config", {})
     talker_config["spk_id"] = {speaker_name: 3000}
     talker_config["spk_is_dialect"] = {speaker_name: False}
@@ -126,8 +139,8 @@ def merge_and_save(base_model_path: str, lora_dir: str, output_dir: str,
 
     print(f"  ✅ 已保存: {output_dir}")
 
-    # 清理
-    del base_model
+    # 清理显存
+    del base_model, peft_model, merged_model
     torch.cuda.empty_cache()
 
 
@@ -150,7 +163,9 @@ def main():
 
     checkpoints = find_checkpoints(args.checkpoints_dir)
     if not checkpoints:
-        print(f"❌ 未找到任何 checkpoint-epoch-* 目录: {args.checkpoints_dir}")
+        print(f"❌ 未找到任何包含 adapter_model.safetensors 的 checkpoint:")
+        print(f"   目录: {args.checkpoints_dir}")
+        print(f"   请先运行 sft_12hz_lora.py 生成 checkpoint")
         return
 
     print(f"找到 {len(checkpoints)} 个 checkpoints:")
@@ -165,9 +180,9 @@ def main():
         output_dir = os.path.join(args.output_parent, output_name)
 
         try:
-            merge_and_save(
+            merge_single_checkpoint(
                 base_model_path=args.base_model,
-                lora_dir=path,
+                checkpoint_path=path,
                 output_dir=output_dir,
                 speaker_name=args.speaker_name,
             )
@@ -176,7 +191,7 @@ def main():
             import traceback
             traceback.print_exc()
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"✅ 全部完成！合并模型保存在: {args.output_parent}")
     print("每个目录都是完整的 HF 模型，可直接上传。")
 
