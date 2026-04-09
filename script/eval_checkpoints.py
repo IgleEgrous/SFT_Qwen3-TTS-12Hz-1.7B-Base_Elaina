@@ -53,7 +53,7 @@ def main():
                         help="参考音频路径（24kHz WAV）")
     parser.add_argument("--test_texts", type=str, nargs="+", required=True,
                         help="测试文本列表")
-    parser.add_argument("--output_dir", type=str, default="../output/eval_samples",
+    parser.add_argument("--output_dir", type=str, default="../outputs/eval_samples",
                         help="输出目录")
     parser.add_argument("--speaker", type=str, default="elaina",
                         help="speaker 名称（训练时的 --speaker_name）")

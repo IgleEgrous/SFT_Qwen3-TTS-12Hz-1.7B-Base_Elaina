@@ -16,8 +16,8 @@ SFT_Qwen3-TTS-12Hz-1.7B-Base/
 ├── models/
 │   ├── Qwen3-TTS-12Hz-1.7B-Base/    # Base 模型权重
 │   └── Qwen3-TTS-Tokenizer-12Hz/     # 专用 tokenizer
-├── datasets/                          # 数据集输出目录
-├── output/                           # 训练输出目录
+├── datasets/                          # 原始数据集（HF缓存）
+├── outputs/                          # 训练输出目录（jsonl、checkpoint、合并模型等）
 ├── script/
 │   ├── dataset.py                    # 官方数据集加载逻辑
 │   ├── prepare_data.py               # 数据 tokenize 脚本（支持 HF / Local 两种模式）
@@ -84,11 +84,11 @@ scipy >= 1.10.0
 python script/prepare_data.py --mode hf \
   --hf_repo yeeko/Elaina_WanderingWitch_audio_JA \
   --hf_split train \
-  --audio_col audio \
+  --audio_col file_name \
   --text_col transcription \
   --ref_audio "/path/to/你的参考音频.wav"  # 用户自由选择参考音频\
   --tokenizer_model_path ../models/Qwen3-TTS-Tokenizer-12Hz \
-  --output_jsonl ../datasets/train_with_codes.jsonl \
+  --output_jsonl ../outputs/train_with_codes.jsonl \
   --batch_size 32 \
   --device cuda:0
 ```
@@ -110,7 +110,7 @@ python script/prepare_data.py --mode local \
   --audio_dir ../datasets/audio \
   --ref_audio "/path/to/你的参考音频.wav"  # 用户自由选择参考音频\
   --tokenizer_model_path ../models/Qwen3-TTS-Tokenizer-12Hz \
-  --output_jsonl ../datasets/train_with_codes.jsonl \
+  --output_jsonl ../outputs/train_with_codes.jsonl \
   --batch_size 32 \
   --device cuda:0
 ```
@@ -124,8 +124,8 @@ python script/prepare_data.py --mode local \
 ```bash
 python script/sft_12hz_lora.py \
   --init_model_path ../models/Qwen3-TTS-12Hz-1.7B-Base \
-  --train_jsonl ../datasets/train_with_codes.jsonl \
-  --output_model_path ../output \
+  --train_jsonl ../outputs/train_with_codes.jsonl \
+  --output_model_path ../outputs \
   --speaker_name elaina \
   --batch_size 2 \
   --lr 2e-6 \
@@ -155,8 +155,8 @@ python script/sft_12hz_lora.py \
 ```bash
 python script/sft_12hz_lora.py \
   --init_model_path ../models/Qwen3-TTS-12Hz-1.7B-Base \
-  --train_jsonl ../datasets/train_with_codes.jsonl \
-  --output_model_path ../output \
+  --train_jsonl ../outputs/train_with_codes.jsonl \
+  --output_model_path ../outputs \
   --speaker_name elaina \
   --num_epochs 32 \
   --batch_size 2 \
@@ -167,7 +167,7 @@ python script/sft_12hz_lora.py \
 **checkpoint 输出结构**：
 
 ```
-output/
+outputs/
 └── checkpoint-epoch-{N}/
     ├── adapter_model.safetensors    # LoRA 权重（仅此文件，约几 MB）
     └── ...（其余文件复制自 Base 模型）
@@ -182,24 +182,24 @@ output/
 ```bash
 python script/eval_checkpoints.py \
   --checkpoints \
-    ../output/checkpoint-epoch-2 \
-    ../output/checkpoint-epoch-4 \
-    ../output/checkpoint-epoch-8 \
-    ../output/checkpoint-epoch-16 \
-    ../output/checkpoint-epoch-32 \
+    ../outputs/checkpoint-epoch-2 \
+    ../outputs/checkpoint-epoch-4 \
+    ../outputs/checkpoint-epoch-8 \
+    ../outputs/checkpoint-epoch-16 \
+    ../outputs/checkpoint-epoch-32 \
   --ref_audio path/to/ref.wav \
   --test_texts \
     "学校行くのは嫌だけど、私みたいな人間は一日行かなかっただけでクラスの皆から存在を忘れられてしまうんだよ" \
     "こんばんは、こっちはボッチです" \
     "本当に、お前助かったな" \
-  --output_dir ../output/eval_samples \
+  --output_dir ../outputs/eval_samples \
   --speaker elaina
 ```
 
 **输出结构**：
 
 ```
-output/eval_samples/
+outputs/eval_samples/
 ├── checkpoint-epoch-2/
 │   ├── 学校行くのは嫌だと....wav
 │   └── ...
@@ -219,14 +219,14 @@ output/eval_samples/
 python script/merge_all_checkpoints.py \
   --base_model ../models/Qwen3-TTS-12Hz-1.7B-Base \
   --checkpoints_dir ../output \
-  --output_parent ../output/merged_models \
+  --output_parent ../outputs/merged_models \
   --speaker_name elaina
 ```
 
 **输出结构**：
 
 ```
-output/merged_models/
+outputs/merged_models/
 ├── checkpoint-epoch-2-merged/     # 完整 HF 模型
 ├── checkpoint-epoch-4-merged/
 ├── checkpoint-epoch-8-merged/

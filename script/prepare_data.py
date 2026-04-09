@@ -83,39 +83,34 @@ def load_hf_dataset(
     Returns:
         items: list of dicts {"audio": "...", "text": "...", "ref_audio": "..."}
     """
-    os.environ["HF_DATASETS_DISABLE_MULTIPROCESSING"] = "1"
-    from datasets import load_dataset
+    # 不用 load_dataset，直接从缓存目录读 parquet（避免 torchcodec + Windows multiprocessing 问题）
+    import glob
 
-    ds = load_dataset(hf_repo, split=split, cache_dir=cache_dir, streaming=False)
+    cache_root = cache_dir or os.path.expanduser("~/.cache/huggingface/datasets")
+    # 找到缓存下的 snapshot 目录
+    repo_cache = os.path.join(cache_root, f"datasets--{hf_repo.replace('/', '--')}")
+    snapshot_dirs = glob.glob(os.path.join(repo_cache, "snapshots", "*"))
+    if not snapshot_dirs:
+        raise FileNotFoundError(f"未找到缓存目录: {repo_cache}，请先确保数据已下载")
+    train_dir = os.path.join(snapshot_dirs[0], split if split else "train")
+    parquet_path = os.path.join(train_dir, "metadata.parquet")
 
-    # 确定 ref_audio
-    if ref_audio is not None:
-        # 用户直接指定，无需从数据集取
-        ref_audio_path = ref_audio
-        rows = list(ds)
-    else:
-        # 从数据集中按索引选取
-        rows = list(ds)
-        audio_obj = rows[ref_audio_idx][audio_col]
-        if isinstance(audio_obj, dict):
-            ref_audio_path = audio_obj.get("path", "") or str(audio_obj)
-        else:
-            ref_audio_path = str(audio_obj)
+    if not os.path.exists(parquet_path):
+        raise FileNotFoundError(f"未找到 parquet: {parquet_path}")
+
+    df = pd.read_parquet(parquet_path)
+
+    # ref_audio：按索引从 parquet 取出文件名，拼成完整缓存路径
+    ref_row = df.iloc[ref_audio_idx]
+    ref_filename = str(ref_row[audio_col]).replace("\\", "/")
+    ref_audio_path = os.path.join(train_dir, os.path.basename(ref_filename))
 
     items = []
-    for row in rows:
-        audio_obj = row[audio_col]
-        if isinstance(audio_obj, dict):
-            audio_path = audio_obj.get("path", "") or str(audio_obj)
-        else:
-            audio_path = str(audio_obj)
-
+    for _, row in df.iterrows():
+        filename = str(row[audio_col]).replace("\\", "/")
+        audio_path = os.path.join(train_dir, os.path.basename(filename))
         text = str(row[text_col])
-        items.append({
-            "audio": audio_path,
-            "text": text,
-            "ref_audio": ref_audio_path,
-        })
+        items.append({"audio": audio_path, "text": text, "ref_audio": ref_audio_path})
 
     print(f"[HF] 加载了 {len(items)} 条 | ref_audio = {ref_audio_path}")
     return items
@@ -276,7 +271,8 @@ def main():
     parser.add_argument("--hf_repo", type=str,
                         help="HF repo id (mode=hf 时必填)")
     parser.add_argument("--hf_split", type=str, default="train")
-    parser.add_argument("--audio_col", type=str, default="audio")
+    parser.add_argument("--audio_col", type=str, default="file_name",
+                        help="HF parquet 缓存中音频列名（默认 file_name）")
     parser.add_argument("--text_col", type=str, default="transcription")
     parser.add_argument("--ref_audio", type=str, default=None,
                         help="直接指定 ref_audio 本地路径（优先于 --ref_audio_idx）")

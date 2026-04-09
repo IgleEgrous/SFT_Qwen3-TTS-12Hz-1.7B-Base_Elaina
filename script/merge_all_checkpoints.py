@@ -150,10 +150,10 @@ def main():
                         default="../models/Qwen3-TTS-12Hz-1.7B-Base",
                         help="Base 模型路径")
     parser.add_argument("--checkpoints_dir", type=str,
-                        default="../output",
+                        default="../outputs",
                         help="checkpoint-epoch-* 所在目录")
     parser.add_argument("--output_parent", type=str,
-                        default="../output/merged_models",
+                        default="../outputs/merged_models",
                         help="合并模型输出父目录")
     parser.add_argument("--speaker_name", type=str, default="elaina",
                         help="说话人名称（更新 config.json 用）")

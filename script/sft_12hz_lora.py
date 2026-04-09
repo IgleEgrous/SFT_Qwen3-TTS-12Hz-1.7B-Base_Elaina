@@ -37,8 +37,8 @@ def train():
     # === 官方原有参数 ===
     parser.add_argument("--init_model_path", type=str,
                         default="../models/Qwen3-TTS-12Hz-1.7B-Base")
-    parser.add_argument("--output_model_path", type=str, default="../output")
-    parser.add_argument("--train_jsonl", type=str, required=True)
+    parser.add_argument("--output_model_path", type=str, default="../outputs")
+    parser.add_argument("--train_jsonl", type=str, default="../outputs/train_with_codes.jsonl")
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=2e-6)   # LoRA 建议用小 lr
     parser.add_argument("--num_epochs", type=int, default=3)
